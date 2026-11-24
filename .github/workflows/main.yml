@@ -1,0 +1,80 @@
+name: Build Zeit Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build_apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unzip project if uploaded as zip
+        run: |
+          if ls *.zip 1> /dev/null 2>&1; then
+            unzip -o *.zip -d .
+          fi
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter 3.29.3
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.3'
+          channel: 'stable'
+          cache: true
+
+      - name: Prepare Android project
+        run: |
+          sed -i '/flutter_local_notifications/d' pubspec.yaml
+          sed -i 's/intl: .*/intl: any/' pubspec.yaml
+          sed -i 's/Icons.paintbrush/Icons.brush/g' lib/screens/home_screen.dart
+          python3 - << 'PY'
+          p = "lib/screens/home_screen.dart"
+          t = open(p, encoding="utf-8").read()
+          t = t.replace("app.logsForCar(car.id, category: 'engine').firstOrNull", "(app.logsForCar(car.id, category: 'engine').isEmpty ? null : app.logsForCar(car.id, category: 'engine').first)")
+          t = t.replace("app.logsForCar(car.id, category: 'gearbox').firstOrNull", "(app.logsForCar(car.id, category: 'gearbox').isEmpty ? null : app.logsForCar(car.id, category: 'gearbox').first)")
+          open(p, "w", encoding="utf-8").write(t)
+          PY
+          flutter create . --org com.dr_mohamed_hamada --project-name zeit_app --platforms=android
+          sed -i 's/android:label="[^"]*"/android:label="زيت"/' android/app/src/main/AndroidManifest.xml
+          python3 - << 'PY'
+          import os, re
+          p = "android/app/src/main/AndroidManifest.xml"
+          txt = open(p, encoding="utf-8").read()
+          perms = '    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />\n'
+          if "android.permission.CAMERA" not in txt:
+              txt = txt.replace("<application", perms + "    <application", 1)
+              open(p, "w", encoding="utf-8").write(txt)
+
+          for gfile in ["android/app/build.gradle.kts", "android/app/build.gradle"]:
+              if os.path.exists(gfile):
+                  g = open(gfile, encoding="utf-8").read()
+                  if gfile.endswith(".kts"):
+                      g = re.sub(r'minSdk\s*=\s*[^\n]+', 'minSdk = 23', g)
+                      g = g.replace("release {", "release {\n            isMinifyEnabled = false\n            isShrinkResources = false", 1)
+                  else:
+                      g = re.sub(r'minSdk\s*=?\s*[^\n]+', 'minSdk = 23', g)
+                      g = g.replace("release {", "release {\n            minifyEnabled false\n            shrinkResources false", 1)
+                  open(gfile, "w", encoding="utf-8").write(g)
+          PY
+
+      - name: Install packages and build split APKs
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+
+      - name: Upload Zeit Split APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zeit-App-APK-Split
+          path: |
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
